@@ -1,5 +1,4 @@
 /* eslint-disable  */
-var counter = 0;
 // these variable set the coords of where the map should appear when the user does not allow the location set.
 // in this case it is set to TRINIDAD & TOBAGO
 var defaultCenterCoords = {
