@@ -622,7 +622,7 @@ $.fn.isOpen = async function (dealer, time) {
     var [ hour, minutes ] = dealerLocalHour.split(':');
     var dealerTime = (Number(hour) * 60) + Number(minutes);
 
-    return (dealerTime >= openTime && dealerTime < closeTime);
+    return { open: (dealerTime >= openTime && dealerTime < closeTime) };
   }
 };
 
