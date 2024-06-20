@@ -1,5 +1,4 @@
 /* eslint-disable  */
-
 // these variable set the coords of where the map should appear when the user does not allow the location set.
 // in this case it is set to TRINIDAD & TOBAGO
 var defaultCenterCoords = {
@@ -92,6 +91,7 @@ var uptimeClicked = false;
 $electricDealer = false;
 $hoverText = $('#hoverText').val();
 $country = window.locatorConfig.country;
+$windowWidth = window.innerWidth;
 
 // Google callback letting us know maps is ready to be used
 (function () {
@@ -333,12 +333,24 @@ $.fn.initGoogleMaps = function () {
   // Lets us control OOO when some cases gmaps takes longer to initialize
   $.ajax({
     type: "GET",
-    url: "https://maps.googleapis.com/maps/api/js?key=AIzaSyAP8IewqHuU8SMz_6tNiIUlbU_l0GFOd1w&libraries=places,geometry",
+    url: `https://maps.googleapis.com/maps/api/js?key=${$key}&libraries=places,geometry`,
     dataType: "script",
     success: function (d) {
       initMap();
     }
   });
+};
+
+$.fn.getTimeZoneId = async function (dealer) {
+  var lat = dealer.MAIN_LATITUDE;
+  var long = dealer.MAIN_LONGITUDE;
+
+  var apiUrl = `https://maps.googleapis.com/maps/api/timezone/json?location=${lat},${long}&timestamp=${Math.floor(Date.now() / 1000)}&key=${$key}`;
+
+  var response = await fetch(apiUrl);
+  var locationObj = await response.json();
+
+  return locationObj.timeZoneId;
 };
 
 $.fn.loadPins = function () {
@@ -492,6 +504,7 @@ $.fn.loadPins = function () {
     }
   }
 };
+
 $.fn.removeWaypoint = function (pin) {
 
   var $this = $(pin);
@@ -528,133 +541,92 @@ $.fn.isWaypoint = function (waypoint) {
   return false;
 };
 
-$.fn.getHours = function (dealer) {
-  let hours = null;
-  let week = {};
+$.fn.buildWeek = function (hours) {
+  var week = [];
+  var perDay = hours.split(',');
+  perDay.forEach((day) => {
+    var dayObj = {};
 
-  const hoursArray = dealer.hours.split(',');
-
-  hoursArray.forEach((hours, idx) => {
-    if (hours.toLowerCase() === 'closed') {
-      week[idx] = { 'Start': 'Closed', 'End': 'Closed' }
+    if (day.toLowerCase() === 'closed') {
+      dayObj = {
+        Start: 'Closed',
+        End: 'Closed',
+      }
     } else {
-      const [start, end] = hours.split('-')
-      week[idx] = { 'Start': start, 'End': end }
-    }
-  });
-  if (dealer.hours) hours = week;
 
-  return hours;
-};
+      var hours = day.split('-');
+      hours.forEach((time, idx) => {
+        var hour = parseInt(time.substr(0,2));
+        var minutes = time.substr(2);
+        var meridian = 'AM';
 
-$.fn.isOpen = function (dealer, time) {
-  var hours = $.fn.getHours(dealer);
-  var zone = moment.tz.guess();
-  var closeSoon = false;
-
-  if (hours) {
-    if (!time) {
-      time = new Date();
-    }
-
-    var todayAtDealer = hours[time.getDay()];
-
-    if (todayAtDealer) {
-
-      var startTime = todayAtDealer.Start;
-      if (startTime.toLowerCase() == 'midnight') {
-        startTime = '12:00 AM';
-      }
-
-      var endTime = todayAtDealer.End;
-      if (endTime.toLowerCase() == 'midnight') {
-        endTime = '11:59 PM';
-      }
-
-      if (startTime.toLowerCase().indexOf('24') > -1) {
-        startTime = '12:00 AM';
-      }
-
-      if (endTime.toLowerCase().indexOf('24') > -1) {
-        endTime = '11:59 PM';
-      }
-
-      if (startTime.toLowerCase() == 'noon') {
-        startTime = '12:00 PM';
-      }
-
-      if (endTime.toLowerCase() == 'noon') {
-        endTime = '12:00 PM';
-      }
-
-      var start = new Date();
-      start.setFullYear(time.getFullYear());
-      start.setMonth(time.getMonth());
-      start.setDate(time.getDate());
-      start.setHours(moment(startTime, ["h:mm A"]).format("HH"));
-      start.setMinutes(moment(startTime, ["h:mm A"]).format("mm"));
-      start.setSeconds(0);
-
-      var end = new Date();
-      end.setFullYear(time.getFullYear());
-      end.setMonth(time.getMonth());
-      end.setDate(time.getDate());
-      end.setHours(moment(endTime, ["h:mm A"]).format("HH"));
-      end.setMinutes(moment(endTime, ["h:mm A"]).format("mm"));
-      end.setSeconds(0);
-
-      if (~endTime.toLowerCase().indexOf("am")) {
-        console.log('end date is AM, add 1 day');
-        end.setDate(time.getDate() + 1);
-      }
-
-      if (moment.tz(zone).isBetween(start, end)) {
-
-        hours = Math.abs(time - end) / 36e5;
-
-        if (hours < 1) {
-          closeSoon = true;
+        if (hour > 12) {
+          hour = hour - 12;
+          meridian = 'PM';
         }
 
-        return { open: true, endTime: end, closeSoon: closeSoon };
-
-      } else {
-        return { open: false, endTime: end, closeSoon: closeSoon };
-      }
+        if (idx === 0) {
+          dayObj.Start = `${hour}:${minutes} ${meridian}`;
+        } else if (idx === 1) {
+          dayObj.End = `${hour}:${minutes} ${meridian}`;
+        };
+      });
     }
-
-
-  }
-
-  return 2;
-
+    week.push(dayObj);
+  });
+  return week;
 };
 
-$.fn.canDetermineHours = function (pin) {
+$.fn.getOpenHours = function (pin) {
+  var time = new Date();
+  var today = time.getDay();
 
-  var hours = null;
+  var earliestHour;
+  var latestHour;
 
-  if (pin.hours['Parts']) {
-    hours = pin.hours['Parts'];
+  if (pin.hours.length === 0) {
+    earliestHour = '';
+    latestHour = '';
+  } else {
+    var allWeek = $.fn.buildWeek(pin.hours);
+    var openHours = allWeek[today]
+
+    earliestHour = openHours.Start;
+    latestHour = openHours.End;
   }
+  return { open: earliestHour, close: latestHour }
+};
 
-  if (!hours && pin.hours['Service']) {
-    hours = pin.hours['Service'];
-  }
-
-  if (!hours && pin.hours['Leasing']) {
-    hours = pin.hours['Leasing'];
+$.fn.isOpen = async function (dealer, time) {
+  var hours = $.fn.getOpenHours(dealer);
+  var compareDate = '1/1/2000 '
+  
+  if (!dealer.timeZoneId) {
+    dealer.timeZoneId = await $.fn.getTimeZoneId(dealer);
   }
 
   if (hours) {
+    var start = new Date(compareDate + hours.open);
+    var end = new Date(compareDate + hours.close);
 
-    return true;
+    if (~hours.close.toLowerCase().indexOf("am")) {
+      end.setDate(compareDate.getDate() + 1);
+    }
+
+    var openTime = (start.getHours() * 60) + start.getMinutes();
+    var closeTime = (end.getHours() * 60) + end.getMinutes();
+
+    var stringDealerDate = moment().tz(dealer.timeZoneId).format();
+    var hourPosition = stringDealerDate.indexOf('T');
+    var dealerLocalHour = stringDealerDate.substring(hourPosition + 1, hourPosition + 6);
+    var [ hour, minutes ] = dealerLocalHour.split(':');
+    var dealerTime = (Number(hour) * 60) + Number(minutes);
+
+    return { open: (dealerTime >= openTime && dealerTime < closeTime) };
   }
-  return false;
 };
 
 $.fn.renderPinDirections = function (markerId) {
-
   var templateClone = $($('#sidebar-directions').clone(true).html());
   var templateClone = $($('#sidebar-direction-list').clone(true).html());
   var markerDetails;
@@ -724,40 +696,30 @@ $.fn.renderPinDirections = function (markerId) {
   return templateClone;
 }
 
-// Creates sidebar-pini overview item
-$.fn.renderPinDetails = function (markerId) {
-
+// Creates sidebar-pin overview item when selected from list
+$.fn.renderPinDetails = async function (markerId) {
   var templateClone = $($('#sidebar-pin').clone(true).html());
-
-
   var markerDetails;
 
   for (i = 0; i < $sortedPins.length; i++) {
 
     if ($sortedPins[i].IDENTIFIER_VALUE == markerId) {
-
       markerDetails = $sortedPins[i];
     }
-
   }
-
   var marker;
   for (i = 0; i < $markers.length; i++) {
-
     if ($markers[i].id == markerId) {
-
       marker = $markers[i];
-
       $viewingPin = marker;
-
     }
   }
+
   $asistHtml = '<button title="Request Access" class="join-select" onclick="return false;">Request Access</button>';
   if ($isAsist) {
     templateClone.find('#partsasist-button').html($asistHtml);
     templateClone.find('#partsasist-button').attr('data-dealerid', markerDetails.IDENTIFIER_VALUE);
     templateClone.find('#partsasist-button').attr('data-name', $.fn.camelCase(markerDetails.COMPANY_DBA_NAME));
-    //Ticket 1072
     if (markerDetails.PARTS_EMAIL) {
       templateClone.find('#partsasist-button').attr('data-dealeremail', markerDetails.PARTS_EMAIL.toLowerCase());
     }
@@ -778,7 +740,6 @@ $.fn.renderPinDetails = function (markerId) {
   }
   if (markerDetails.EMAIL_ADDRESS) {
     templateClone.find('#email').html('<a href="mailto:' + markerDetails.EMAIL_ADDRESS.toLowerCase() + '">' + '<img src="/blocks/dealer-locator/images/Mail.svg" />' + markerDetails.EMAIL_ADDRESS.toLowerCase() + '</a>');
-
   }
   templateClone.find('.detail-website a').attr('href', $.fn.formatWebAddress(markerDetails.WEB_ADDRESS));
   templateClone.find('#phone div').html('<a href="tel:' + markerDetails.REG_PHONE_NUMBER + '">' + $.fn.formatPhoneNumber(markerDetails.REG_PHONE_NUMBER) + '</a>');
@@ -802,17 +763,18 @@ $.fn.renderPinDetails = function (markerId) {
   }
   templateClone.find('#set-dealer').attr('data-pin', markerDetails.IDENTIFIER_VALUE);
 
-
-  var isOpen = $.fn.isOpen(markerDetails);
+  var openHours = $.fn.getOpenHours(markerDetails);
   var isOpenHtml = "";
-  if (isOpen.open && !isOpen.closeSoon) {
-    isOpenHtml = "Open till " + moment(isOpen.endTime).format("h:mm A");
-  } else if (isOpen.open && isOpen.closeSoon) {
-    isOpenHtml = "Closing soon";
+  if (openHours.open === '' && openHours.close === '') {
+    isOpenHtml = "No schedule information available";
+  } else if (openHours.open.toLowerCase() === 'open 24 hours') {
+    isOpenHtml = openHours.open
+  } else if (openHours.open.toLowerCase() === 'closed') {
+    isOpenHtml = openHours.open
   } else {
-    isOpenHtml = "Closed";
+    var isOpen = await $.fn.isOpen(markerDetails);
+    isOpenHtml = `${isOpen.open ? 'Open' : 'Closed' } - ${openHours.open.toLowerCase()} - ${openHours.close.toLowerCase()}`;
   }
-
 
   var servicesHtml = templateClone.find('#services');
   var driversHtml = templateClone.find('#drivers');
@@ -863,154 +825,10 @@ $.fn.renderPinDetails = function (markerId) {
   } else {
     templateClone.find('.header-driver-title').show();
   }
-
   if ($.isEmptyObject(markerDetails.services)) {
     templateClone.find('.header-title').css('display', 'none');
   }
-
-  // We need to display all hours to the user in the details pane
-  var hours = null;
-  var hoursHtml = templateClone.find('#details');
-  var days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-  var hasPartsHours = false,
-      hasServiceHours = false,
-      hasLeasingHours = false,
-      hasSalesHours = false;
-
-
-  if (markerDetails.hours.Parts) {
-    hours = markerDetails.hours.Parts;
-
-    $("<div/>", {
-      'html': '<div class="hours-dept">Parts:</div>'
-    }).appendTo(hoursHtml);
-
-    var added = 0;
-    $.each(hours, function (i, item) {
-
-      if (hours[i].Start.toLowerCase().indexOf('24 hours') >= 0 || hours[i].Start.toLowerCase().indexOf('closed') >= 0) {
-        hours[i].Start = '';
-      } else if (hours[i].Start.toLowerCase().length <= 0) {
-        return;
-      }
-
-      $("<div/>", {
-        'html': '<span id=day>' + days[i] + '</span> <span id=time>' + hours[i].Start + ((!hours[i].Start) ? '' : ' - ') + hours[i].End + '</span>'
-      }).appendTo(hoursHtml);
-      added++;
-      hasPartsHours = true;
-    });
-
-    if (added <= 0) {
-      $("<div/>", {
-        'html': 'Please call for hours.'
-      }).appendTo(hoursHtml);
-    }
-
-  }
-
-  if (markerDetails.hours.Service) {
-    hours = markerDetails.hours.Service;
-
-    $("<div/>", {
-      'html': '<div class="hours-dept">Service:</div>'
-    }).appendTo(hoursHtml);
-
-    var added = 0;
-    $.each(hours, function (i, item) {
-
-      if (hours[i].Start.toLowerCase().indexOf('24 hours') >= 0 || hours[i].Start.toLowerCase().indexOf('closed') >= 0) {
-        hours[i].Start = '';
-      } else if (hours[i].Start.toLowerCase().length <= 0) {
-        return;
-      }
-
-      $("<div/>", {
-        'html': '<span id=day>' + days[i] + '</span> <span id=time>' + hours[i].Start + ((!hours[i].Start) ? '' : ' - ') + hours[i].End + '</span>'
-      }).appendTo(hoursHtml);
-      added++;
-      hasServiceHours = true;
-    });
-
-    if (added <= 0) {
-      $("<div/>", {
-        'html': 'Please call for hours.'
-      }).appendTo(hoursHtml);
-    }
-  }
-
-  if (markerDetails.hours.Leasing) {
-    hours = markerDetails.hours.Leasing;
-
-    $("<div/>", {
-      'html': '<div class="hours-dept">Leasing:</div>'
-    }).appendTo(hoursHtml);
-
-    var added = 0;
-    $.each(hours, function (i, item) {
-
-      if (hours[i].Start.toLowerCase().indexOf('24 hours') >= 0 || hours[i].Start.toLowerCase().indexOf('closed') >= 0) {
-        hours[i].Start = '';
-      } else if (hours[i].Start.toLowerCase().length <= 0) {
-        return;
-      }
-
-      $("<div/>", {
-        'html': '<span id=day>' + days[i] + '</span> <span id=time>' + hours[i].Start + ((!hours[i].Start) ? '' : ' - ') + hours[i].End + '</span>'
-      }).appendTo(hoursHtml);
-      added++;
-      hasLeasingHours = true;
-    });
-    if (added <= 0) {
-      $("<div/>", {
-        'html': 'Please call for hours.'
-      }).appendTo(hoursHtml);
-    }
-  }
-
-
-  if (markerDetails.hours.Sales) {
-    hours = markerDetails.hours.Sales;
-
-    if (hours[0].Start.length > 0) {
-      $("<div/>", {
-        'html': '<div class="hours-dept">Sales:</div>'
-      }).appendTo(hoursHtml);
-      var added = 0;
-      $.each(hours, function (i, item) {
-
-        if (hours[i].Start.toLowerCase().indexOf('24 hours') >= 0 || hours[i].Start.toLowerCase().indexOf('closed') >= 0) {
-          hours[i].Start = '';
-        } else if (hours[i].Start.toLowerCase().length <= 0) {
-          return;
-        }
-
-        $("<div/>", {
-          'html': '<span id=day>' + days[i] + '</span> <span id=time>' + hours[i].Start + ((!hours[i].Start) ? '' : ' - ') + hours[i].End + '</span>'
-        }).appendTo(hoursHtml);
-        added++;
-        hasSalesHours = true;
-      });
-      if (added <= 0) {
-        $("<div/>", {
-          'html': 'Please call for hours.'
-        }).appendTo(hoursHtml);
-      }
-    }
-  }
-
-  if (!hasPartsHours && !hasServiceHours && !hasLeasingHours && !hasSalesHours) {
-    isOpenHtml = "Call";
-  }
-
   templateClone.find('#hours div').html(isOpenHtml + ' <span class="toggle-arrow"></span>');
-
-  if ($.isEmptyObject(hours)) {
-    templateClone.find('.toggle-arrow').css('display', 'none');
-  }
-
-  $.fn.isOpen(markerDetails);
 
   $map.panTo(marker.position);
 
@@ -1023,14 +841,16 @@ $.fn.renderAddDirectionsPin = function (marker, details) {
 
   templateClone.find('.fa-close').attr('data-id', details.IDENTIFIER_VALUE);
 
-  var isOpen = $.fn.isOpen(details);
+  var openHours = $.fn.getOpenHours(pin);
   var isOpenHtml = "";
-  if (isOpen.open && !isOpen.closeSoon) {
-    isOpenHtml = "Open till " + moment(isOpen.endTime).format("h:mm A");
-  } else if (isOpen.open && isOpen.closeSoon) {
-    isOpenHtml = "Closing soon";
+  if (openHours.open === '' && openHours.close === '') {
+    isOpenHtml = "No schedule information available";
+  } else if (openHours.open.toLowerCase() === 'open 24 hours') {
+    isOpenHtml = `${openHours.open}`;
+  } else if (openHours.open.toLowerCase() === 'closed') {
+    isOpenHtml = `${openHours.open}`;
   } else {
-    isOpenHtml = "Closed";
+    isOpenHtml = `${openHours.open.toLowerCase()} - ${openHours.close.toLowerCase()}`;
   }
 
   templateClone.find('.heading p').text($.fn.camelCase(details.COMPANY_DBA_NAME));
@@ -1078,14 +898,15 @@ $.fn.setupAddDirectionsView = function () {
 
   $map.setZoom(8);
 };
-$.fn.switchSidebarPane = function (id, e) {
+
+$.fn.switchSidebarPane = async function (id, e) {
   var markerId = ($(e).data('id') ? $(e).data('id') : e);
 
   var content = $('#' + id).html();
 
   var forceRefresh = false;
   if (e && id == 'sidebar-pin') {
-    content = $.fn.renderPinDetails(markerId);
+    content = await $.fn.renderPinDetails(markerId);
   }
   if ((e && id == 'sidebar-directions') || id == 'add-directions-return' || id == 'sidebar-direction-list') {
     content = $.fn.renderPinDirections(markerId);
@@ -1416,72 +1237,7 @@ $.fn.showPin = function (pin) {
   }
 
   var filter = $.fn.currentFilter();
-
-  var condition;
-
-  if ($consolidateFilters) {
-    switch (filter) {
-      case 'all':
-        condition = ['Sales, Service & Parts', 'Service and Parts', 'Customer Service Centre', 'Head office'].includes(pin.DEALER_TYPE_DESC);
-        break;
-
-      case 'sales-service':
-        condition = pin.DEALER_TYPE_DESC.indexOf('Sales, Service & Parts') > -1;
-        break;
-
-      case 'services-parts':
-        condition = pin.DEALER_TYPE_DESC.indexOf('Service and Parts') > -1;
-        break;
-
-      case 'customer-service':
-        condition = pin.DEALER_TYPE_DESC.indexOf('Customer Service Centre') > -1;
-        break;
-
-      case 'head-office':
-        condition = pin.DEALER_TYPE_DESC.indexOf('Head office') > -1;
-        break;
-
-      default:
-        condition = false;
-        break;
-    }
-  } else {
-    switch (filter) {
-      case 'full-line':
-        condition = pin.DEALER_TYPE_DESC.toLowerCase().indexOf('full line') > -1;
-        break;
-
-      case 'rental-leasing':
-        condition = pin.DEALER_TYPE_DESC.toLowerCase().indexOf('leasing') > -1;
-        break;
-
-      case 'parts-service':
-        condition = pin.DEALER_TYPE_DESC.toLowerCase().indexOf('parts & service') > -1;
-        break;
-
-      case 'parts-only':
-        condition = pin.DEALER_TYPE_DESC.toLowerCase().indexOf('parts only') > -1;
-        break;
-
-      case 'satellite':
-        condition = pin.DEALER_TYPE_DESC.toLowerCase().indexOf('satellite') > -1;
-        break;
-
-      case 'premium-certified':
-        condition = pin.isCertifiedCenter;
-        break;
-
-      case 'certified-uptime':
-        condition = pin.isCertifiedUptimeCenter;
-        break;
-
-      default:
-        condition = false;
-        break;
-    }
-  }
-
-  return condition;
+  return (filter === "all");
 };
 
 $.fn.tmpPins = function (tmpPinList) {
@@ -1497,18 +1253,20 @@ $.fn.tmpPins = function (tmpPinList) {
     templateClone.find('.teaser-top').attr('data-id', pin.IDENTIFIER_VALUE);
     templateClone.find('.more').attr('data-id', pin.IDENTIFIER_VALUE);
 
-
-    var isOpen = $.fn.isOpen(pin);
+    var openHours = $.fn.getOpenHours(pin);
     var isOpenHtml = "";
-    if (isOpen.open && !isOpen.closeSoon) {
-      isOpenHtml = "Open till " + moment(isOpen.endTime).format("h:mm A");
-    } else if (isOpen.open && isOpen.closeSoon) {
-      isOpenHtml = "Closing soon";
+    if (openHours.open === '' && openHours.close === '') {
+      isOpenHtml = "No schedule information available";
+    } else if (openHours.open.toLowerCase() === 'open 24 hours') {
+      isOpenHtml = `${openHours.open}`;
+    } else if (openHours.open.toLowerCase() === 'closed') {
+      isOpenHtml = `${openHours.open}`;
     } else {
-      isOpenHtml = "Closed";
+      isOpenHtml = `${openHours.open.toLowerCase()} - ${openHours.close.toLowerCase()}`;
     }
 
     templateClone.find('.heading p').text($.fn.camelCase(pin.COMPANY_DBA_NAME));
+
     templateClone.find('.hours').text(isOpenHtml);
     templateClone.find('.distance').text(pin.distance.toFixed(2) + ' mi');
     templateClone.find('.address').text(pin.MAIN_ADDRESS_LINE_1_TXT);
@@ -1567,8 +1325,8 @@ $.fn.tmpPins = function (tmpPinList) {
       'html': templateClone,
       'click': function () {
         // look into a child element with class teaser-top and get the data-id attribute
-        var id = $(this).find('.teaser-top').attr('data-id');
-        $.fn.switchSidebarPane('sidebar-pin', id);
+        // var id = $(this).find('.teaser-top').attr('data-id');
+        // $.fn.switchSidebarPane('sidebar-pin', id);
       },
       'mouseenter': function () {
 
@@ -1967,14 +1725,16 @@ $.fn.selectNearbyPins = function () {
     templateClone.find('.panel-container').parent().attr('data-id', pin.IDENTIFIER_VALUE);
 
 
-    var isOpen = $.fn.isOpen(pin);
+    var openHours = $.fn.getOpenHours(pin);
     var isOpenHtml = "";
-    if (isOpen.open && !isOpen.closeSoon) {
-      isOpenHtml = "Open till " + moment(isOpen.endTime).format("h:mm A");
-    } else if (isOpen.open && isOpen.closeSoon) {
-      isOpenHtml = "Closing soon";
+    if (openHours.open === '' && openHours.close === '') {
+      isOpenHtml = "No schedule information available";
+    } else if (openHours.open.toLowerCase() === 'open 24 hours') {
+      isOpenHtml = `${openHours.open}`;
+    } else if (openHours.open.toLowerCase() === 'closed') {
+      isOpenHtml = `${openHours.open}`;
     } else {
-      isOpenHtml = "Closed";
+      isOpenHtml = `${openHours.open.toLowerCase()} - ${openHours.close.toLowerCase()}`;
     }
 
 
@@ -2160,39 +1920,6 @@ $.fn.getDistanceInKm = function ($b) {
 
 $.fn.deg2rad = function ($deg) {
   return $deg * (Math.PI / 180);
-};
-
-$.fn.getTimezone = function (dealerId) {
-
-  var time = Date.now();
-
-  var dealerLength = $dealers.length;
-  var dealer = null;
-  for (var i = 0; i < dealerLength; i++) {
-
-    if ($dealers[i].IDENTIFIER_VALUE == dealerId) {
-
-      dealer = $dealers[i];
-      break;
-    }
-  }
-
-  if (!dealer.timezone) {
-
-    $.ajax({
-
-      url: "https://maps.googleapis.com/maps/api/timezone/json?location=" + dealer.MAIN_LATITUDE + "," + dealer.MAIN_LONGITUDE + "&timestamp=" + Math.floor(time / 1000) + '&key=' + $key,
-      type: "GET",
-      success: function (data) {
-        dealer.hourOffset = (data.rawOffset + data.dstOffset) / 60 / 60;
-        dealer.timezone = data.timeZoneId;
-        $.fn.isCurrentlyOpen(dealer);
-      }
-    });
-  } else {
-
-    $.fn.isCurrentlyOpen(dealer);
-  }
 };
 
 // Fires when a client types a location manually
@@ -2660,12 +2387,13 @@ $.fn.formatPhoneNumber = function (str) {
 }
 
 $.fn.formatWebAddress = function (str) {
-  var prefix = 'http://';
-  if (str.substr(0, prefix.length) !== prefix) {
-    return prefix + str.toLowerCase();
+  var prefixes = 'http';
+  if (str.length === 0) return;
+  if (str.substr(0, prefixes.length).toLowerCase() === prefixes) {
+    return str.toLowerCase();
   }
-  return str.toLowerCase();
-}
+  return 'https://' + str.toLowerCase();
+};
 
 $.fn.clearDirections = function () {
 
@@ -2913,6 +2641,7 @@ $('.go-back').on('click', function () {
   $('.sidebar').css("overflow", "hidden");
   $('.add-directions').text("Recalculate Directions");
 });
+
 $('.go-back-direction').on('click', function () {
   $.fn.switchSidebarPane('sidebar-pins');
   $wayPoints = [];
@@ -2928,6 +2657,7 @@ $("#location").on('keyup', function (e) {
     $.fn.setAddress();
   }
 });
+
 $("#location2").on('keyup', function (e) {
   if (e.keyCode == 13) {
     $.fn.setAddress2();
