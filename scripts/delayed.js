@@ -72,7 +72,6 @@ window.OptanonWrapper = () => {
   });
 };
 
-
 // Google Analytics
 async function loadGoogleTagManager() {
   // google tag manager
